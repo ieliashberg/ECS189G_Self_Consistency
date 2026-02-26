@@ -92,14 +92,12 @@ class ModelClient:
         top_p: float,
         num_samples: int,
     ) -> List[str]:
-        resolved_model_name = _resolve_hf_model_name(model_name)
-
         if model_name not in self._hf_models or model_name not in self._hf_tokenizers:
-            tokenizer = AutoTokenizer.from_pretrained(resolved_model_name, use_fast=True)
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
             if architecture == "seq2seq":
-                model = AutoModelForSeq2SeqLM.from_pretrained(resolved_model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
             else:
-                model = AutoModelForCausalLM.from_pretrained(resolved_model_name)
+                model = AutoModelForCausalLM.from_pretrained(model_name)
             self._hf_models[model_name] = model
             self._hf_tokenizers[model_name] = tokenizer
 
@@ -140,11 +138,6 @@ def _infer_model_route(model_name: str) -> Tuple[str, str, str]:
         return "huggingface", "", "seq2seq"
     return "huggingface", "", "causal"
 
-
-def _resolve_hf_model_name(model_name: str) -> str:
-    if model_name == "google/ul2":
-        return "google/flan-ul2"
-    return model_name
 
 
 def _extract_text_from_response(response: Any) -> str:
