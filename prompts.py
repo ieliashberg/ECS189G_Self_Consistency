@@ -46,12 +46,9 @@ A: Janet sells 16 - 3 - 4 = 9 eggs per day. She makes 9 * 2 = 18 dollars. The an
 }
 
 
-
-
 def build_prompt(question: str, benchmark: BenchmarkType, cot: bool = True) -> str:
     parts = [SYSTEM_CONTEXTS[benchmark]]
 
-    # add few shot examples
     if cot and benchmark in EXAMPLES:
         parts.append(EXAMPLES[benchmark])
 
