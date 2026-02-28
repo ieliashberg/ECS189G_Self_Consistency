@@ -10,7 +10,7 @@ from pipeline_types import EvalStats, PipelineConfig
 
 
 def build_pipeline_config(
-    model: str = "gpt-3.5-turbo",
+    model: str,
     datasets: str | list[str] = "svamp,aqua,gsm8k,strategy_qa",
     methods: str | list[str] = "greedy,self_consistency",
     k_values: str | list[int] = "5",

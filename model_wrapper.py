@@ -4,10 +4,11 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 from openai import OpenAI
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
 # so client persists
 _DEFAULT_MODEL_CLIENT: ModelClient | None = None
+FIXED_TOP_P = 1.0
 
 
 class ModelClient:
@@ -15,13 +16,13 @@ class ModelClient:
         self._openai_client = None
         self._hf_models: Dict[str, Any] = {}
         self._hf_tokenizers: Dict[str, Any] = {}
+        self._hf_devices: Dict[str, torch.device] = {}
 
     def generate(
         self,
         model_name: str,
         prompt: str,
         temperature: float = 0.7,
-        top_p: float = 1.0,
         num_samples: int = 1,
     ) -> List[str]:
         provider, api, architecture = _infer_model_route(model_name)
@@ -32,7 +33,6 @@ class ModelClient:
                 prompt=prompt,
                 api=api,
                 temperature=temperature,
-                top_p=top_p,
                 num_samples=num_samples,
             )
 
@@ -42,7 +42,6 @@ class ModelClient:
                 prompt=prompt,
                 architecture=architecture,
                 temperature=temperature,
-                top_p=top_p,
                 num_samples=num_samples,
             )
         raise RuntimeError(f"Unknown provider: {provider}")
@@ -53,7 +52,6 @@ class ModelClient:
         prompt: str,
         api: str,
         temperature: float,
-        top_p: float,
         num_samples: int,
     ) -> List[str]:
         if self._openai_client is None:
@@ -64,7 +62,7 @@ class ModelClient:
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
-                "top_p": top_p,
+                "top_p": FIXED_TOP_P,
                 "n": num_samples,
             }
             response = self._openai_client.chat.completions.create(**kwargs)
@@ -77,7 +75,7 @@ class ModelClient:
                     "model": model_name,
                     "input": prompt,
                     "temperature": temperature,
-                    "top_p": top_p,
+                    "top_p": FIXED_TOP_P,
                 }
                 response = self._openai_client.responses.create(**kwargs)
                 text = getattr(response, "output_text", None)
@@ -92,33 +90,51 @@ class ModelClient:
         prompt: str,
         architecture: str,
         temperature: float,
-        top_p: float,
         num_samples: int,
     ) -> List[str]:
         if model_name not in self._hf_models or model_name not in self._hf_tokenizers:
             tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+            model_config = AutoConfig.from_pretrained(model_name)
+            # UL2 checkpoints already include separate embedding weights.
+            # Disabling tying avoids noisy warnings during load.
+            if architecture == "seq2seq" and getattr(model_config, "tie_word_embeddings", None):
+                model_config.tie_word_embeddings = False
             if architecture == "seq2seq":
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name, config=model_config)
             else:
                 model = AutoModelForCausalLM.from_pretrained(model_name)
+            device = _select_torch_device()
+            model = model.to(device)
+            model.eval()
+            print(f"[model_wrapper] Loaded Hugging Face model '{model_name}' on device: {device}.")
             self._hf_models[model_name] = model
             self._hf_tokenizers[model_name] = tokenizer
+            self._hf_devices[model_name] = device
 
         model = self._hf_models[model_name]
         tokenizer = self._hf_tokenizers[model_name]
+        device = self._hf_devices[model_name]
 
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model_inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        max_input_length = _resolve_max_input_length(model, tokenizer)
+        model_inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_input_length,
+        ).to(device)
 
+        do_sample = temperature > 0.0
         generate_kwargs: Dict[str, Any] = {
-            "do_sample": temperature > 0.0,
-            "temperature": max(temperature, 1e-5),
-            "top_p": top_p,
+            "do_sample": do_sample,
             "num_return_sequences": num_samples,
             "pad_token_id": tokenizer.pad_token_id,
         }
+        if do_sample:
+            generate_kwargs["temperature"] = max(temperature, 1e-5)
+            generate_kwargs["top_p"] = FIXED_TOP_P
 
         with torch.no_grad():
             generated = model.generate(**model_inputs, **generate_kwargs)
@@ -152,6 +168,31 @@ def _extract_text_from_response(response: Any) -> str:
                 chunks.append(text)
     return "\n".join(chunks)
 
+
+def _resolve_max_input_length(model: Any, tokenizer: Any) -> int:
+    candidates: List[int] = []
+
+    for attr in ("max_position_embeddings", "n_positions", "max_sequence_length"):
+        value = getattr(model.config, attr, None)
+        if isinstance(value, int) and 0 < value < 10_000_000:
+            candidates.append(value)
+
+    token_max = getattr(tokenizer, "model_max_length", None)
+    if isinstance(token_max, int) and 0 < token_max < 10_000_000:
+        candidates.append(token_max)
+
+    if candidates:
+        return min(candidates)
+    return 2048
+
+
+def _select_torch_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
 def _get_default_model_client() -> ModelClient:
     global _DEFAULT_MODEL_CLIENT
     if _DEFAULT_MODEL_CLIENT is None:
@@ -162,15 +203,12 @@ def run_model(
     model_name: str,
     prompt: str,
     temperature: float = 0.7,
-    top_p: float = 1.0,
     num_samples: int = 1,
 ) -> List[str]:
-
     client = _get_default_model_client()
     return client.generate(
         model_name=model_name,
         prompt=prompt,
         temperature=temperature,
-        top_p=top_p,
         num_samples=num_samples,
     )

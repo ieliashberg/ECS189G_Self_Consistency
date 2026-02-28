@@ -113,7 +113,6 @@ def query_model(
                 model_name=model,
                 prompt=prompt,
                 temperature=temperature,
-                top_p=1.0,
                 num_samples=num_samples,
             )
         except Exception as error:

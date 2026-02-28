@@ -19,7 +19,7 @@ class EvalStats:
 
 @dataclass
 class PipelineConfig:
-    model: str = "gpt-3.5-turbo"
+    model: str
     datasets: list[str] = field(default_factory=lambda: ["svamp", "aqua", "gsm8k", "strategy_qa"])
     methods: list[str] = field(default_factory=lambda: ["greedy", "self_consistency"])
     k_values: list[int] = field(default_factory=lambda: [5])
