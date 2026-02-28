@@ -6,6 +6,9 @@ import torch
 from openai import OpenAI
 from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
+# so client persists
+_DEFAULT_MODEL_CLIENT: ModelClient | None = None
+
 
 class ModelClient:
     def __init__(self) -> None:
@@ -148,3 +151,26 @@ def _extract_text_from_response(response: Any) -> str:
             if text:
                 chunks.append(text)
     return "\n".join(chunks)
+
+def _get_default_model_client() -> ModelClient:
+    global _DEFAULT_MODEL_CLIENT
+    if _DEFAULT_MODEL_CLIENT is None:
+        _DEFAULT_MODEL_CLIENT = ModelClient()
+    return _DEFAULT_MODEL_CLIENT
+
+def run_model(
+    model_name: str,
+    prompt: str,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
+    num_samples: int = 1,
+) -> List[str]:
+
+    client = _get_default_model_client()
+    return client.generate(
+        model_name=model_name,
+        prompt=prompt,
+        temperature=temperature,
+        top_p=top_p,
+        num_samples=num_samples,
+    )

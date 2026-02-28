@@ -49,19 +49,13 @@ FEW_SHOT_EXAMPLES = {
     BenchmarkType.GSM8K: ARITHMETIC_EXAMPLES,
     BenchmarkType.SVAMP: ARITHMETIC_EXAMPLES,   # same table as GSM8K
     BenchmarkType.AQUA: AQUA_EXAMPLES,
-    BenchmarkType.STRATEGY_QA: ARITHMETIC_EXAMPLES,  # placeholder 
+    BenchmarkType.STRATEGY_QA: ARITHMETIC_EXAMPLES,  # placeholder
 }
 
 def build_prompt(question: str, benchmark: BenchmarkType, cot: bool = True) -> str:
     examples = FEW_SHOT_EXAMPLES[benchmark]
-    
+
     if cot:
         return f"{examples}\n\nQ: {question}\nA:"
     else:
         return f"Q: {question}\nA:"
-
-
-# test it
-print(build_prompt(gsm8k_batch['question'][0], BenchmarkType.GSM8K))
-print("---")
-print(build_prompt(aqua_batch['question'][0], BenchmarkType.AQUA))
