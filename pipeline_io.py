@@ -43,23 +43,47 @@ def write_results(rows: List[EvalStats], output_csv: Path) -> None:
     with output_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
-            ["timestamp_utc", "model", "dataset", "method", "k", "correct", "total", "parsed", "accuracy"]
+            ["timestamp_utc", "model", "dataset", "method", "k",
+             "question", "gold_answer", "predicted", "is_correct", "responses",
+             "correct", "total", "parsed", "accuracy"]
         )
         timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         for row in rows:
-            writer.writerow(
-                [
-                    timestamp,
-                    row.model,
-                    row.dataset,
-                    row.method,
-                    row.k,
-                    row.correct,
-                    row.total,
-                    row.parsed,
-                    f"{row.accuracy:.6f}",
-                ]
-            )
+            if row.details:
+                for detail in row.details:
+                    writer.writerow(
+                        [
+                            timestamp,
+                            row.model,
+                            row.dataset,
+                            row.method,
+                            row.k,
+                            detail["question"],
+                            detail["gold_answer"],
+                            detail["predicted"],
+                            detail["is_correct"],
+                            "|||".join(detail["responses"]),
+                            row.correct,
+                            row.total,
+                            row.parsed,
+                            f"{row.accuracy:.6f}",
+                        ]
+                    )
+            else:
+                writer.writerow(
+                    [
+                        timestamp,
+                        row.model,
+                        row.dataset,
+                        row.method,
+                        row.k,
+                        "", "", "", "", "",
+                        row.correct,
+                        row.total,
+                        row.parsed,
+                        f"{row.accuracy:.6f}",
+                    ]
+                )
 
 
 def print_results_summary(rows: List[EvalStats], output_csv: str) -> None:

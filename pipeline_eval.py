@@ -133,6 +133,7 @@ def evaluate(
     correct = 0
     parsed = 0
     total = len(dataset)
+    details = []
 
     temperature = 0.0 if method == "greedy" else self_consistency_temperature
     n_samples = 1 if method == "greedy" else k
@@ -151,10 +152,19 @@ def evaluate(
         else:
             predicted = majority_vote(responses, benchmark)
 
+        is_correct = grade_answer(predicted, example["final_answer"], benchmark)
         if predicted is not None:
             parsed += 1
-        if grade_answer(predicted, example["final_answer"], benchmark):
+        if is_correct:
             correct += 1
+
+        details.append({
+            "question": example["question"],
+            "gold_answer": example["final_answer"],
+            "predicted": predicted,
+            "is_correct": is_correct,
+            "responses": responses,
+        })
 
     accuracy = correct / total if total else 0.0
     return EvalStats(
@@ -166,4 +176,5 @@ def evaluate(
         total=total,
         parsed=parsed,
         accuracy=accuracy,
+        details=details,
     )

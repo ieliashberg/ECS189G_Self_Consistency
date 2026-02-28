@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass
@@ -14,6 +14,7 @@ class EvalStats:
     total: int
     parsed: int
     accuracy: float
+    details: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
