@@ -118,13 +118,7 @@ class ModelClient:
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        max_input_length = _resolve_max_input_length(model, tokenizer)
-        model_inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=max_input_length,
-        ).to(device)
+        model_inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
         do_sample = temperature > 0.0
         generate_kwargs: Dict[str, Any] = {
@@ -167,23 +161,6 @@ def _extract_text_from_response(response: Any) -> str:
             if text:
                 chunks.append(text)
     return "\n".join(chunks)
-
-
-def _resolve_max_input_length(model: Any, tokenizer: Any) -> int:
-    candidates: List[int] = []
-
-    for attr in ("max_position_embeddings", "n_positions", "max_sequence_length"):
-        value = getattr(model.config, attr, None)
-        if isinstance(value, int) and 0 < value < 10_000_000:
-            candidates.append(value)
-
-    token_max = getattr(tokenizer, "model_max_length", None)
-    if isinstance(token_max, int) and 0 < token_max < 10_000_000:
-        candidates.append(token_max)
-
-    if candidates:
-        return min(candidates)
-    return 2048
 
 
 def _select_torch_device() -> torch.device:
