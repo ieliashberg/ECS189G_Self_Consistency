@@ -44,12 +44,31 @@ A: The distance that the person traveled would have been 20 km/hr * 2.5 hrs = 50
 Q: How many keystrokes are needed to type the numbers from 1 to 500? Answer Choices: (a) 1156 (b) 1392 (c) 1480 (d) 1562 (e) 1788
 A: There are 9 one-digit numbers from 1 to 9. There are 90 two-digit numbers from 10 to 99. There are 401 three-digit numbers from 100 to 500. 9 + 90(2) + 401(3) = 1392. The answer is (b)."""
 
+# Table 15 from Wang et al. 2023 - used for StrategyQA
+STRATEGY_QA_EXAMPLES = """Q: Do hamsters provide food for any animals?
+A: Hamsters are prey animals. Prey are food for predators. Thus, hamsters provide food for some animals. So the answer is yes.
+
+Q: Could Brooke Shields succeed at University of Pennsylvania?
+A: Brooke Shields went to Princeton University. Princeton University is about as academically rigorous as the University of Pennsylvania. Thus, Brooke Shields could also succeed at the University of Pennsylvania. So the answer is yes.
+
+Q: Yes or no: Hydrogen's atomic number squared exceeds number of Spice Girls?
+A: Hydrogen has an atomic number of 1. 1 squared is 1. There are 5 Spice Girls. Thus, Hydrogen's atomic number squared is less than 5. So the answer is no.
+
+Q: Yes or no: Is it common to see frost during some college commencements?
+A: College commencement ceremonies can happen in December, May, and June. December is in the winter, so there can be frost. Thus, there could be frost at some commencements. So the answer is yes.
+
+Q: Yes or no: Could a llama birth twice during War in Vietnam (1945-46)?
+A: The War in Vietnam was 6 months. The gestation period for a llama is 11 months, which is more than 6 months. Thus, a llama could not give birth twice during the War in Vietnam. So the answer is no.
+
+Q: Yes or no: Would a pear sink in water?
+A: The density of a pear is about 0.6g/cm3, which is less than water. Objects less dense than water float. Thus, a pear would float. So the answer is no."""
+
 # Map each benchmark to its examples
 FEW_SHOT_EXAMPLES = {
     BenchmarkType.GSM8K: ARITHMETIC_EXAMPLES,
     BenchmarkType.SVAMP: ARITHMETIC_EXAMPLES,   # same table as GSM8K
     BenchmarkType.AQUA: AQUA_EXAMPLES,
-    BenchmarkType.STRATEGY_QA: ARITHMETIC_EXAMPLES,  # placeholder
+    BenchmarkType.STRATEGY_QA: STRATEGY_QA_EXAMPLES,
 }
 
 def build_prompt(question: str, benchmark: BenchmarkType, cot: bool = True) -> str:
