@@ -6,6 +6,12 @@ import torch
 from openai import OpenAI
 from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
+try:
+    from transformers import BitsAndBytesConfig
+    _BNB_AVAILABLE = True
+except ImportError:
+    _BNB_AVAILABLE = False
+
 # so client persists
 _DEFAULT_MODEL_CLIENT: ModelClient | None = None
 
@@ -97,10 +103,49 @@ class ModelClient:
     ) -> List[str]:
         if model_name not in self._hf_models or model_name not in self._hf_tokenizers:
             tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-            if architecture == "seq2seq":
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-            else:
-                model = AutoModelForCausalLM.from_pretrained(model_name)
+            use_gpu = torch.cuda.is_available()
+            model = None
+
+            if use_gpu and _BNB_AVAILABLE:
+                try:
+                    load_kwargs: Dict[str, Any] = {
+                        "quantization_config": BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_compute_dtype=torch.float16,
+                            bnb_4bit_quant_type="nf4",
+                        ),
+                        "device_map": "auto",
+                    }
+                    if architecture == "seq2seq":
+                        model = AutoModelForSeq2SeqLM.from_pretrained(model_name, **load_kwargs)
+                    else:
+                        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+                    print(f"[model_wrapper] Loaded {model_name} (4-bit quantized, GPU)")
+                except Exception as e:
+                    print(f"[model_wrapper] 4-bit loading failed: {e}")
+                    model = None
+
+            # Strategy 2: float16 on GPU
+            if model is None and use_gpu:
+                try:
+                    load_kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
+                    if architecture == "seq2seq":
+                        model = AutoModelForSeq2SeqLM.from_pretrained(model_name, **load_kwargs)
+                    else:
+                        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+                    print(f"[model_wrapper] Loaded {model_name} (float16, GPU)")
+                except Exception as e:
+                    print(f"[model_wrapper] float16 GPU loading failed: {e}")
+                    model = None
+
+            # Strategy 3: CPU fallback
+            if model is None:
+                if architecture == "seq2seq":
+                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                else:
+                    model = AutoModelForCausalLM.from_pretrained(model_name)
+                print(f"[model_wrapper] Loaded {model_name} (float32, CPU)")
+
             self._hf_models[model_name] = model
             self._hf_tokenizers[model_name] = tokenizer
 
@@ -113,6 +158,7 @@ class ModelClient:
         model_inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
         generate_kwargs: Dict[str, Any] = {
+            "max_new_tokens": 256,
             "do_sample": temperature > 0.0,
             "temperature": max(temperature, 1e-5),
             "top_p": top_p,
@@ -137,8 +183,12 @@ def _infer_model_route(model_name: str) -> Tuple[str, str, str]:
         return "openai", "chat", ""
     if model_name == "gpt-5.2":
         return "openai", "responses", ""
-    if model_name == "google/ul2":
+
+    # seq2seq models (T5 family)
+    seq2seq_prefixes = ("google/ul2", "google/flan-t5", "google/flan-ul2", "t5-")
+    if any(model_name.startswith(p) for p in seq2seq_prefixes):
         return "huggingface", "", "seq2seq"
+
     return "huggingface", "", "causal"
 
 
