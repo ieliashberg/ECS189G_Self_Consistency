@@ -11,7 +11,6 @@ from pipeline_io import (
     load_openai_key_from_envfile,
     parse_csv_list,
     parse_k_values,
-    print_results_summary,
     write_results,
 )
 from pipeline_types import EvalStats, PipelineConfig
@@ -25,19 +24,6 @@ def _infer_runtime_route(model_name: str) -> tuple[str, str]:
     if model_name == "google/ul2":
         return "huggingface", "seq2seq"
     return "huggingface", "causal"
-
-
-def _slice_dataset_for_chunk(dataset, chunk_index: int | None, num_chunks: int | None):
-    if chunk_index is None or num_chunks is None:
-        return dataset, 0
-
-    total = len(dataset)
-    chunk_size = (total + num_chunks - 1) // num_chunks
-    start = chunk_index * chunk_size
-    end = min(total, start + chunk_size)
-    if start >= end:
-        return dataset.select([]), start
-    return dataset.select(range(start, end)), start
 
 
 def _print_runtime_debug(config: PipelineConfig) -> None:
@@ -68,7 +54,7 @@ def _print_runtime_debug(config: PipelineConfig) -> None:
         f"Config: datasets={config.datasets}, methods={config.methods}, "
         f"k_values={config.k_values}, max_samples={config.max_samples}, "
         f"self_consistency_temperature={config.self_consistency_temperature}, "
-        f"cache_path={config.cache_path}, chunk_index={config.chunk_index}, num_chunks={config.num_chunks}"
+        f"cache_path={config.cache_path}"
     )
     print(f"Output CSV: {config.output_csv}")
 
@@ -81,8 +67,6 @@ def build_pipeline_config(
     max_samples: int | None,
     self_consistency_temperature: float,
     cache_path: str,
-    chunk_index: int | None,
-    num_chunks: int | None,
     output_csv: str,
 ) -> PipelineConfig:
     dataset_list = parse_csv_list(datasets) if isinstance(datasets, str) else list(datasets)
@@ -100,8 +84,6 @@ def build_pipeline_config(
         max_samples=max_samples,
         self_consistency_temperature=self_consistency_temperature,
         cache_path=cache_path,
-        chunk_index=chunk_index,
-        num_chunks=num_chunks,
         output_csv=output_csv,
     )
     config.validate(valid_datasets=DATASET_ALIASES.keys())
@@ -121,14 +103,12 @@ def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
     loaded_datasets: dict = {}
     for key in config.datasets:
         benchmark = DATASET_ALIASES[key]
-        dataset = load_benchmark_dataset(benchmark, max_samples=config.max_samples)
-        sliced_dataset, offset = _slice_dataset_for_chunk(dataset, config.chunk_index, config.num_chunks)
-        loaded_datasets[benchmark] = (sliced_dataset, offset)
+        loaded_datasets[benchmark] = load_benchmark_dataset(benchmark, max_samples=config.max_samples)
 
-    for benchmark, (dataset, offset) in loaded_datasets.items():
-        print(f"Dataset '{benchmark.value}': {len(dataset)} examples loaded (offset={offset})")
+    for benchmark, dataset in loaded_datasets.items():
+        print(f"Dataset '{benchmark.value}': {len(dataset)} examples loaded")
 
-    for benchmark, (dataset, offset) in loaded_datasets.items():
+    for benchmark, dataset in loaded_datasets.items():
         for method in config.methods:
             if method == "greedy":
                 if 1 not in config.k_values:
@@ -143,9 +123,6 @@ def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
                         k_values=[1],
                         self_consistency_temperature=config.self_consistency_temperature,
                         cache_path=config.cache_path,
-                        question_index_offset=offset,
-                        chunk_index=config.chunk_index,
-                        num_chunks=config.num_chunks,
                     )
                 )
                 continue
@@ -166,9 +143,6 @@ def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
                     k_values=sc_k_values,
                     self_consistency_temperature=config.self_consistency_temperature,
                     cache_path=config.cache_path,
-                    question_index_offset=offset,
-                    chunk_index=config.chunk_index,
-                    num_chunks=config.num_chunks,
                 )
             )
 

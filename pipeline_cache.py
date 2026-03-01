@@ -95,9 +95,6 @@ def evaluate_with_cache(
     k_values: List[int],
     self_consistency_temperature: float,
     cache_path: str,
-    question_index_offset: int = 0,
-    chunk_index: Optional[int] = None,
-    num_chunks: Optional[int] = None,
 ) -> List[EvalStats]:
     if method not in {"greedy", "self_consistency"}:
         raise ValueError(f"Unsupported method for caching: {method}")
@@ -123,7 +120,7 @@ def evaluate_with_cache(
         f"required_samples={required_samples}"
     )
     for local_idx, example in enumerate(tqdm(dataset, desc=progress_label)):
-        question_idx = question_index_offset + local_idx
+        question_idx = local_idx
         existing_records = list(cache_index.get(question_idx, []))
         existing_records = _normalize_loaded_records(existing_records)
         existing_count = len(existing_records)
@@ -163,8 +160,6 @@ def evaluate_with_cache(
                         "raw_response": response,
                         "parsed_answer": parsed_answer,
                         "temperature": temperature,
-                        "chunk_index": chunk_index,
-                        "num_chunks": num_chunks,
                     }
                 )
 

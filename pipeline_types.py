@@ -26,8 +26,6 @@ class PipelineConfig:
     max_samples: Optional[int] = None
     self_consistency_temperature: float = 0.7
     cache_path: str = "results/cache/generation_cache.jsonl"
-    chunk_index: Optional[int] = None
-    num_chunks: Optional[int] = None
     output_csv: str = "results/first_baseline.csv"
 
     def validate(self, valid_datasets: Iterable[str]) -> None:
@@ -46,15 +44,3 @@ class PipelineConfig:
 
         if self.max_samples is not None and self.max_samples <= 0:
             raise ValueError("max_samples must be None or a positive integer.")
-
-        if (self.chunk_index is None) != (self.num_chunks is None):
-            raise ValueError("chunk_index and num_chunks must either both be set or both be None.")
-
-        if self.num_chunks is not None and self.num_chunks <= 0:
-            raise ValueError("num_chunks must be a positive integer.")
-
-        if self.chunk_index is not None and self.chunk_index < 0:
-            raise ValueError("chunk_index must be >= 0.")
-
-        if self.chunk_index is not None and self.num_chunks is not None and self.chunk_index >= self.num_chunks:
-            raise ValueError("chunk_index must be less than num_chunks.")
