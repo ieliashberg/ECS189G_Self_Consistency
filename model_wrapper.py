@@ -123,22 +123,38 @@ class ModelClient:
         do_sample = temperature > 0.0
         generate_kwargs: Dict[str, Any] = {
             "do_sample": do_sample,
-            "num_return_sequences": num_samples,
             "pad_token_id": tokenizer.pad_token_id,
         }
         if do_sample:
             generate_kwargs["temperature"] = max(temperature, 1e-5)
             generate_kwargs["top_p"] = FIXED_TOP_P
 
-        with torch.no_grad():
-            generated = model.generate(**model_inputs, **generate_kwargs)
+        # For large seq2seq models (e.g., UL2), sampling many return sequences at once
+        # can cause CUDA OOM. Generate one sample at a time to keep memory bounded.
+        sample_batch_size = 1 if (architecture == "seq2seq" and num_samples > 1) else num_samples
 
         outputs: List[str] = []
         input_len = model_inputs["input_ids"].shape[-1]
-        for seq in generated:
-            if architecture == "causal":
-                seq = seq[input_len:]
-            outputs.append(tokenizer.decode(seq, skip_special_tokens=True).strip())
+        remaining = num_samples
+
+        while remaining > 0:
+            this_batch = min(sample_batch_size, remaining)
+            batch_kwargs = dict(generate_kwargs)
+            batch_kwargs["num_return_sequences"] = this_batch
+            try:
+                with torch.no_grad():
+                    generated = model.generate(**model_inputs, **batch_kwargs)
+            except RuntimeError as error:
+                if "out of memory" in str(error).lower() and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                raise
+
+            for seq in generated:
+                if architecture == "causal":
+                    seq = seq[input_len:]
+                outputs.append(tokenizer.decode(seq, skip_special_tokens=True).strip())
+            remaining -= this_batch
+
         return outputs
 
 

@@ -5,9 +5,15 @@ import platform
 import sys
 from pathlib import Path
 
+from pipeline_cache import evaluate_with_cache
 from pipeline_data import DATASET_ALIASES, load_benchmark_dataset
-from pipeline_eval import evaluate
-from pipeline_io import load_openai_key_from_envfile, parse_csv_list, parse_k_values, print_results_summary, write_results
+from pipeline_io import (
+    load_openai_key_from_envfile,
+    parse_csv_list,
+    parse_k_values,
+    print_results_summary,
+    write_results,
+)
 from pipeline_types import EvalStats, PipelineConfig
 
 
@@ -19,6 +25,19 @@ def _infer_runtime_route(model_name: str) -> tuple[str, str]:
     if model_name == "google/ul2":
         return "huggingface", "seq2seq"
     return "huggingface", "causal"
+
+
+def _slice_dataset_for_chunk(dataset, chunk_index: int | None, num_chunks: int | None):
+    if chunk_index is None or num_chunks is None:
+        return dataset, 0
+
+    total = len(dataset)
+    chunk_size = (total + num_chunks - 1) // num_chunks
+    start = chunk_index * chunk_size
+    end = min(total, start + chunk_size)
+    if start >= end:
+        return dataset.select([]), start
+    return dataset.select(range(start, end)), start
 
 
 def _print_runtime_debug(config: PipelineConfig) -> None:
@@ -48,19 +67,23 @@ def _print_runtime_debug(config: PipelineConfig) -> None:
     print(
         f"Config: datasets={config.datasets}, methods={config.methods}, "
         f"k_values={config.k_values}, max_samples={config.max_samples}, "
-        f"self_consistency_temperature={config.self_consistency_temperature}"
+        f"self_consistency_temperature={config.self_consistency_temperature}, "
+        f"cache_path={config.cache_path}, chunk_index={config.chunk_index}, num_chunks={config.num_chunks}"
     )
     print(f"Output CSV: {config.output_csv}")
 
 
 def build_pipeline_config(
     model: str,
-    datasets: str | list[str] = "svamp,aqua,gsm8k,strategy_qa",
-    methods: str | list[str] = "greedy,self_consistency",
-    k_values: str | list[int] = "5",
-    max_samples: int | None = None,
-    self_consistency_temperature: float = 0.7,
-    output_csv: str = "results/first_baseline.csv",
+    datasets: str | list[str],
+    methods: str | list[str],
+    k_values: str | list[int],
+    max_samples: int | None,
+    self_consistency_temperature: float,
+    cache_path: str,
+    chunk_index: int | None,
+    num_chunks: int | None,
+    output_csv: str,
 ) -> PipelineConfig:
     dataset_list = parse_csv_list(datasets) if isinstance(datasets, str) else list(datasets)
     method_list = parse_csv_list(methods) if isinstance(methods, str) else list(methods)
@@ -76,6 +99,9 @@ def build_pipeline_config(
         k_values=k_list,
         max_samples=max_samples,
         self_consistency_temperature=self_consistency_temperature,
+        cache_path=cache_path,
+        chunk_index=chunk_index,
+        num_chunks=num_chunks,
         output_csv=output_csv,
     )
     config.validate(valid_datasets=DATASET_ALIASES.keys())
@@ -83,7 +109,6 @@ def build_pipeline_config(
 
 
 def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
-    # Only OpenAI models require OPENAI_API_KEY.
     if config.model in {"gpt-3.5-turbo", "gpt-5.2"}:
         load_openai_key_from_envfile()
         if not os.getenv("OPENAI_API_KEY"):
@@ -93,38 +118,59 @@ def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
 
     rows: list[EvalStats] = []
 
-    loaded_datasets = {
-        DATASET_ALIASES[key]: load_benchmark_dataset(DATASET_ALIASES[key], max_samples=config.max_samples)
-        for key in config.datasets
-    }
-    for benchmark, dataset in loaded_datasets.items():
-        print(f"Dataset '{benchmark.value}': {len(dataset)} examples loaded")
+    loaded_datasets: dict = {}
+    for key in config.datasets:
+        benchmark = DATASET_ALIASES[key]
+        dataset = load_benchmark_dataset(benchmark, max_samples=config.max_samples)
+        sliced_dataset, offset = _slice_dataset_for_chunk(dataset, config.chunk_index, config.num_chunks)
+        loaded_datasets[benchmark] = (sliced_dataset, offset)
 
-    for benchmark, dataset in loaded_datasets.items():
+    for benchmark, (dataset, offset) in loaded_datasets.items():
+        print(f"Dataset '{benchmark.value}': {len(dataset)} examples loaded (offset={offset})")
+
+    for benchmark, (dataset, offset) in loaded_datasets.items():
         for method in config.methods:
             if method == "greedy":
-                rows.append(
-                    evaluate(
+                if 1 not in config.k_values:
+                    print(f"Skipping greedy for {benchmark.value}: k=1 not in k_values={config.k_values}")
+                    continue
+                rows.extend(
+                    evaluate_with_cache(
                         model=config.model,
                         benchmark=benchmark,
                         dataset=dataset,
                         method=method,
-                        k=1,
+                        k_values=[1],
                         self_consistency_temperature=config.self_consistency_temperature,
+                        cache_path=config.cache_path,
+                        question_index_offset=offset,
+                        chunk_index=config.chunk_index,
+                        num_chunks=config.num_chunks,
                     )
                 )
-            else:
-                for k in config.k_values:
-                    rows.append(
-                        evaluate(
-                            model=config.model,
-                            benchmark=benchmark,
-                            dataset=dataset,
-                            method=method,
-                            k=k,
-                            self_consistency_temperature=config.self_consistency_temperature,
-                        )
-                    )
+                continue
+
+            sc_k_values = [k for k in config.k_values if k > 1]
+            if not sc_k_values:
+                print(
+                    f"Skipping self_consistency for {benchmark.value}: "
+                    f"no k>1 values in k_values={config.k_values}"
+                )
+                continue
+            rows.extend(
+                evaluate_with_cache(
+                    model=config.model,
+                    benchmark=benchmark,
+                    dataset=dataset,
+                    method=method,
+                    k_values=sc_k_values,
+                    self_consistency_temperature=config.self_consistency_temperature,
+                    cache_path=config.cache_path,
+                    question_index_offset=offset,
+                    chunk_index=config.chunk_index,
+                    num_chunks=config.num_chunks,
+                )
+            )
 
     write_results(rows, output_csv=Path(config.output_csv))
     return rows

@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import re
 import time
-from collections import Counter
-from typing import Iterable, List, Optional
-
-from datasets import Dataset
-from tqdm import tqdm
+from typing import List, Optional
 
 from model_wrapper import run_model
-from pipeline_types import EvalStats
-from prompts import BenchmarkType, build_prompt
+from prompts import BenchmarkType
 
 
 def _normalize_numeric(text: str) -> Optional[str]:
@@ -85,20 +80,6 @@ def grade_answer(predicted: Optional[str], gold: str, benchmark: BenchmarkType) 
     return predicted.strip().lower() == gold.strip().lower()
 
 
-def majority_vote(responses: Iterable[str], benchmark: BenchmarkType) -> Optional[str]:
-    parsed = [extract_answer(resp, benchmark) for resp in responses]
-    valid = [p for p in parsed if p is not None]
-    if not valid:
-        return None
-
-    counts = Counter(valid)
-    top_count = max(counts.values())
-    for prediction in valid:
-        if counts[prediction] == top_count:
-            return prediction
-    return None
-
-
 def query_model(
     model: str,
     prompt: str,
@@ -119,61 +100,3 @@ def query_model(
             last_error = error
             time.sleep(2 ** attempt)
     raise RuntimeError(f"Model request failed after {max_retries} retries: {last_error}")
-
-
-def evaluate(
-    model: str,
-    benchmark: BenchmarkType,
-    dataset: Dataset,
-    method: str,
-    k: int,
-    self_consistency_temperature: float,
-) -> EvalStats:
-    correct = 0
-    parsed = 0
-    total = len(dataset)
-    details = []
-
-    temperature = 0.0 if method == "greedy" else self_consistency_temperature
-    n_samples = 1 if method == "greedy" else k
-
-    for example in tqdm(dataset, desc=f"{benchmark.value} | {method} | k={k}"):
-        prompt = build_prompt(example["question"], benchmark, cot=True)
-        responses = query_model(
-            model=model,
-            prompt=prompt,
-            temperature=temperature,
-            num_samples=n_samples,
-        )
-
-        if method == "greedy":
-            predicted = extract_answer(responses[0], benchmark)
-        else:
-            predicted = majority_vote(responses, benchmark)
-
-        is_correct = grade_answer(predicted, example["final_answer"], benchmark)
-        if predicted is not None:
-            parsed += 1
-        if is_correct:
-            correct += 1
-
-        details.append({
-            "question": example["question"],
-            "gold_answer": example["final_answer"],
-            "predicted": predicted,
-            "is_correct": is_correct,
-            "responses": responses,
-        })
-
-    accuracy = correct / total if total else 0.0
-    return EvalStats(
-        model=model,
-        dataset=benchmark.value,
-        method=method,
-        k=k,
-        correct=correct,
-        total=total,
-        parsed=parsed,
-        accuracy=accuracy,
-        details=details,
-    )

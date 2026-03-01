@@ -1,4 +1,9 @@
+from __future__ import annotations
+
 from enum import Enum
+from functools import lru_cache
+
+from transformers import AutoTokenizer
 
 class BenchmarkType(Enum):
     SVAMP = "svamp"
@@ -71,10 +76,65 @@ FEW_SHOT_EXAMPLES = {
     BenchmarkType.STRATEGY_QA: STRATEGY_QA_EXAMPLES,
 }
 
-def build_prompt(question: str, benchmark: BenchmarkType, cot: bool = True) -> str:
+def build_prompt(
+    question: str,
+    benchmark: BenchmarkType,
+    cot: bool = True,
+    model_name: str | None = None,
+) -> str:
     examples = FEW_SHOT_EXAMPLES[benchmark]
+
+    if cot and model_name == "google/ul2":
+        return _build_ul2_adaptive_prompt(question, examples)
 
     if cot:
         return f"{examples}\n\nQ: {question}\nA:"
     else:
         return f"Q: {question}\nA:"
+
+
+def _split_example_blocks(examples: str) -> list[str]:
+    parts = examples.strip().split("\n\nQ: ")
+    if not parts:
+        return []
+    blocks: list[str] = []
+    for idx, part in enumerate(parts):
+        text = part.strip()
+        if not text:
+            continue
+        if idx == 0:
+            blocks.append(text)
+        else:
+            blocks.append(f"Q: {text}")
+    return blocks
+
+
+@lru_cache(maxsize=1)
+def _get_ul2_tokenizer():
+    return AutoTokenizer.from_pretrained("google/ul2", use_fast=True)
+
+
+def _get_ul2_input_limit(tokenizer) -> int:
+    model_max = getattr(tokenizer, "model_max_length", None)
+    if isinstance(model_max, int) and 0 < model_max < 100_000:
+        return model_max
+    return 512
+
+
+def _build_ul2_adaptive_prompt(question: str, examples: str) -> str:
+    tokenizer = _get_ul2_tokenizer()
+    max_tokens = _get_ul2_input_limit(tokenizer)
+    blocks = _split_example_blocks(examples)
+
+    question_only = f"Q: {question}\nA:"
+    for n in range(len(blocks), -1, -1):
+        if n == 0:
+            prompt = question_only
+        else:
+            prefix = "\n\n".join(blocks[:n])
+            prompt = f"{prefix}\n\nQ: {question}\nA:"
+        token_count = len(tokenizer(prompt, add_special_tokens=True)["input_ids"])
+        if token_count <= max_tokens:
+            return prompt
+
+    return question_only
