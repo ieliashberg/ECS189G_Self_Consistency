@@ -133,7 +133,14 @@ def _build_ul2_adaptive_prompt(question: str, examples: str) -> str:
         else:
             prefix = "\n\n".join(blocks[:n])
             prompt = f"{prefix}\n\nQ: {question}\nA:"
-        token_count = len(tokenizer(prompt, add_special_tokens=True)["input_ids"])
+        token_count = len(
+            tokenizer(
+                prompt,
+                add_special_tokens=True,
+                truncation=False,
+                verbose=False,
+            )["input_ids"]
+        )
         if token_count <= max_tokens:
             return prompt
 

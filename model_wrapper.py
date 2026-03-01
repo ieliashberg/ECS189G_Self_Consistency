@@ -11,6 +11,13 @@ _DEFAULT_MODEL_CLIENT: ModelClient | None = None
 FIXED_TOP_P = 1.0
 
 
+def _get_tokenizer_input_limit(tokenizer: Any) -> int:
+    model_max = getattr(tokenizer, "model_max_length", None)
+    if isinstance(model_max, int) and 0 < model_max < 100_000:
+        return model_max
+    return 512
+
+
 class ModelClient:
     def __init__(self) -> None:
         self._openai_client = None
@@ -118,7 +125,13 @@ class ModelClient:
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model_inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        tokenizer_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
+        if architecture == "seq2seq":
+            tokenizer_kwargs["truncation"] = True
+            tokenizer_kwargs["max_length"] = _get_tokenizer_input_limit(tokenizer)
+            tokenizer_kwargs["verbose"] = False
+
+        model_inputs = tokenizer(prompt, **tokenizer_kwargs).to(device)
 
         do_sample = temperature > 0.0
         generate_kwargs: Dict[str, Any] = {
