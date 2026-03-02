@@ -27,7 +27,7 @@ def _majority_vote_parsed(parsed_answers: Iterable[Optional[str]]) -> Optional[s
 def run_benchmark_pipeline_batch(
     config: PipelineConfig,
     *,
-    max_output_tokens: int = 256,
+    max_output_tokens: int | None = 8192,
     batch_cache_dir: str = "results/batch",
 ) -> list[EvalStats]:
     if config.model == "gpt-3.5-turbo":

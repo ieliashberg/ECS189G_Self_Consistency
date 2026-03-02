@@ -9,9 +9,8 @@ from run_pipeline import build_pipeline_config, run_benchmark_pipeline
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run all four benchmarks on gpt-5-mini with cache-aware self-consistency. "
-            "Self-consistency generates up to max k once (default k=40) and reuses "
-            "those samples for smaller k values."
+            "Run all four benchmarks on gpt-5-mini with cache-aware "
+            "self-consistency at k=40 only."
         )
     )
     parser.add_argument(
@@ -45,8 +44,8 @@ def main() -> None:
     config = build_pipeline_config(
         model="gpt-5-mini",
         datasets=["svamp", "aqua", "gsm8k", "strategy_qa"],
-        methods=["greedy", "self_consistency"],
-        k_values=[1, 5, 10, 20, 40],
+        methods=["self_consistency, greedy"],
+        k_values=[40],
         max_samples=args.max_samples,
         self_consistency_temperature=args.self_consistency_temperature,
         cache_path=args.cache_path,

@@ -4,7 +4,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from openai import OpenAI
 
@@ -77,6 +77,28 @@ def _extract_texts_from_batch_response_body(body: Dict[str, Any]) -> List[str]:
     return values
 
 
+def _batch_response_was_truncated(body: Dict[str, Any]) -> bool:
+    status = body.get("status")
+    if status == "incomplete":
+        return True
+
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+                return True
+
+    output = body.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            item_status = item.get("status")
+            if item_status == "incomplete":
+                return True
+    return False
+
+
 def _response_content_to_text(content: Any) -> str:
     if hasattr(content, "text"):
         maybe = getattr(content, "text")
@@ -105,7 +127,7 @@ class BatchPipeline:
         dataset: Iterable[dict],
         temperature: float,
         n: int,
-        max_tokens: int,
+        max_tokens: Optional[int],
     ) -> Path:
         mode = _infer_batch_mode(model)
         endpoint = _batch_endpoint_for_model(model)
@@ -116,17 +138,19 @@ class BatchPipeline:
             for idx, example in enumerate(dataset):
                 prompt = build_prompt(example["question"], benchmark, cot=True, model_name=model)
                 if mode == "chat":
+                    body: Dict[str, Any] = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "n": n,
+                        "temperature": temperature,
+                    }
+                    if max_tokens is not None:
+                        body["max_tokens"] = max_tokens
                     row = {
                         "custom_id": f"{benchmark.value}-{idx}",
                         "method": "POST",
                         "url": endpoint,
-                        "body": {
-                            "model": model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "n": n,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                        },
+                        "body": body,
                     }
                     handle.write(json.dumps(row, ensure_ascii=True) + "\n")
                     continue
@@ -135,8 +159,9 @@ class BatchPipeline:
                     body: Dict[str, Any] = {
                         "model": model,
                         "input": prompt,
-                        "max_output_tokens": max_tokens,
                     }
+                    if max_tokens is not None:
+                        body["max_output_tokens"] = max_tokens
                     if _responses_supports_temperature(model):
                         body["temperature"] = temperature
 
@@ -221,6 +246,11 @@ class BatchPipeline:
             if status_code >= 400:
                 continue
             body = response.get("body", {})
+            if _batch_response_was_truncated(body):
+                raise RuntimeError(
+                    f"Batch output for custom_id='{custom_id}' was truncated by a token limit. "
+                    "Increase max_output_tokens or trim few-shot examples."
+                )
             texts = _extract_texts_from_batch_response_body(body)
             if not texts:
                 continue
@@ -247,7 +277,7 @@ class BatchPipeline:
         dataset: Iterable[dict],
         temperature: float,
         n: int,
-        max_tokens: int = 256,
+        max_tokens: Optional[int] = 8192,
     ) -> Dict[int, List[str]]:
         requests_jsonl = self._build_requests_jsonl(
             model=model,

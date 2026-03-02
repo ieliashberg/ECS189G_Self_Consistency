@@ -10,6 +10,8 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 _DEFAULT_MODEL_CLIENT: ModelClient | None = None
 FIXED_TOP_P = 1.0
 _RESPONSES_TEMPERATURE_MODELS = {"gpt-5.2"}
+_CONTINUATION_PROMPT = "Continue exactly where you stopped. Do not repeat prior text."
+_MAX_OPENAI_CONTINUATIONS = 8
 
 
 def _get_tokenizer_input_limit(tokenizer: Any) -> int:
@@ -66,32 +68,111 @@ class ModelClient:
             self._openai_client = OpenAI()
 
         if api == "chat":
-            kwargs: Dict[str, Any] = {
-                "model": model_name,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "top_p": FIXED_TOP_P,
-                "n": num_samples,
-            }
-            response = self._openai_client.chat.completions.create(**kwargs)
-            return [(choice.message.content or "").strip() for choice in response.choices]
+            outputs: List[str] = []
+            for _ in range(num_samples):
+                outputs.append(
+                    self._generate_openai_chat_with_continuation(
+                        model_name=model_name,
+                        prompt=prompt,
+                        temperature=temperature,
+                    )
+                )
+            return outputs
 
         if api == "responses":
             outputs: List[str] = []
             for _ in range(num_samples):
-                kwargs = {
-                    "model": model_name,
-                    "input": prompt,
-                }
-                if _responses_supports_temperature(model_name):
-                    kwargs["temperature"] = temperature
-                    kwargs["top_p"] = FIXED_TOP_P
-                response = self._openai_client.responses.create(**kwargs)
-                text = getattr(response, "output_text", None)
-                outputs.append(text.strip() if text else _extract_text_from_response(response).strip())
+                outputs.append(
+                    self._generate_openai_responses_with_continuation(
+                        model_name=model_name,
+                        prompt=prompt,
+                        temperature=temperature,
+                    )
+                )
             return outputs
 
         raise RuntimeError(f"Unknown OpenAI API: {api}")
+
+    def _generate_openai_chat_with_continuation(
+        self,
+        *,
+        model_name: str,
+        prompt: str,
+        temperature: float,
+    ) -> str:
+        messages: List[Dict[str, str]] = [{"role": "user", "content": prompt}]
+        chunks: List[str] = []
+
+        for _ in range(_MAX_OPENAI_CONTINUATIONS + 1):
+            kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": FIXED_TOP_P,
+                "n": 1,
+            }
+            response = self._openai_client.chat.completions.create(**kwargs)
+            choice = response.choices[0]
+            text = (choice.message.content or "")
+            chunks.append(text)
+
+            finish_reason = getattr(choice, "finish_reason", None)
+            if finish_reason != "length":
+                return "".join(chunks).strip()
+
+            messages.extend(
+                [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": _CONTINUATION_PROMPT},
+                ]
+            )
+
+        raise RuntimeError(
+            f"OpenAI chat output for model '{model_name}' exceeded continuation limit "
+            f"({_MAX_OPENAI_CONTINUATIONS}) and may be truncated."
+        )
+
+    def _generate_openai_responses_with_continuation(
+        self,
+        *,
+        model_name: str,
+        prompt: str,
+        temperature: float,
+    ) -> str:
+        chunks: List[str] = []
+        previous_response_id: str | None = None
+        next_input = prompt
+
+        for _ in range(_MAX_OPENAI_CONTINUATIONS + 1):
+            kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "input": next_input,
+            }
+            if previous_response_id:
+                kwargs["previous_response_id"] = previous_response_id
+            if _responses_supports_temperature(model_name):
+                kwargs["temperature"] = temperature
+                kwargs["top_p"] = FIXED_TOP_P
+
+            response = self._openai_client.responses.create(**kwargs)
+            text = getattr(response, "output_text", None)
+            chunks.append(text if isinstance(text, str) else _extract_text_from_response(response))
+
+            if not _responses_was_truncated(response):
+                return "".join(chunks).strip()
+
+            previous_response_id = getattr(response, "id", None)
+            if not previous_response_id:
+                raise RuntimeError(
+                    f"OpenAI responses output for model '{model_name}' appears truncated but has "
+                    "no response id for continuation."
+                )
+            next_input = _CONTINUATION_PROMPT
+
+        raise RuntimeError(
+            f"OpenAI responses output for model '{model_name}' exceeded continuation limit "
+            f"({_MAX_OPENAI_CONTINUATIONS}) and may be truncated."
+        )
 
     def _generate_huggingface(
         self,
@@ -127,19 +208,32 @@ class ModelClient:
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        tokenizer_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
+        tokenizer_kwargs: Dict[str, Any] = {"return_tensors": "pt", "truncation": False}
         if architecture == "seq2seq":
-            tokenizer_kwargs["truncation"] = True
-            tokenizer_kwargs["max_length"] = _get_tokenizer_input_limit(tokenizer)
             tokenizer_kwargs["verbose"] = False
 
         model_inputs = tokenizer(prompt, **tokenizer_kwargs).to(device)
+        input_len = model_inputs["input_ids"].shape[-1]
+        if architecture == "seq2seq":
+            max_input_len = _get_tokenizer_input_limit(tokenizer)
+            if input_len > max_input_len:
+                raise RuntimeError(
+                    f"Prompt length ({input_len} tokens) exceeds {model_name} input limit "
+                    f"({max_input_len}). Trim few-shot examples rather than truncating question text."
+                )
 
         do_sample = temperature > 0.0
         generate_kwargs: Dict[str, Any] = {
             "do_sample": do_sample,
             "pad_token_id": tokenizer.pad_token_id,
         }
+        inferred_max_new_tokens = _resolve_hf_max_new_tokens(
+            model=model,
+            architecture=architecture,
+            input_len=input_len,
+        )
+        if inferred_max_new_tokens is not None:
+            generate_kwargs["max_new_tokens"] = inferred_max_new_tokens
         if do_sample:
             generate_kwargs["temperature"] = max(temperature, 1e-5)
             generate_kwargs["top_p"] = FIXED_TOP_P
@@ -149,7 +243,6 @@ class ModelClient:
         sample_batch_size = 1 if (architecture == "seq2seq" and num_samples > 1) else num_samples
 
         outputs: List[str] = []
-        input_len = model_inputs["input_ids"].shape[-1]
         remaining = num_samples
 
         while remaining > 0:
@@ -165,8 +258,22 @@ class ModelClient:
                 raise
 
             for seq in generated:
+                raw_seq = seq
+                if _hf_output_was_truncated(
+                    sequence=raw_seq,
+                    architecture=architecture,
+                    input_len=input_len,
+                    eos_token_id=tokenizer.eos_token_id,
+                    max_new_tokens=inferred_max_new_tokens,
+                ):
+                    raise RuntimeError(
+                        f"{model_name} output reached its configured generation limit before EOS. "
+                        "Trim few-shot examples if needed."
+                    )
                 if architecture == "causal":
-                    seq = seq[input_len:]
+                    seq = raw_seq[input_len:]
+                else:
+                    seq = raw_seq
                 outputs.append(tokenizer.decode(seq, skip_special_tokens=True).strip())
             remaining -= this_batch
 
@@ -187,6 +294,71 @@ def _infer_model_route(model_name: str) -> Tuple[str, str, str]:
 
 def _responses_supports_temperature(model_name: str) -> bool:
     return model_name in _RESPONSES_TEMPERATURE_MODELS
+
+
+def _response_incomplete_reason(response: Any) -> str | None:
+    details = getattr(response, "incomplete_details", None)
+    if isinstance(details, dict):
+        reason = details.get("reason")
+        return str(reason) if reason else None
+    reason = getattr(details, "reason", None)
+    return str(reason) if reason else None
+
+
+def _responses_was_truncated(response: Any) -> bool:
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        return True
+
+    for item in getattr(response, "output", []) or []:
+        item_status = getattr(item, "status", None)
+        if item_status == "incomplete":
+            return True
+    return False
+
+
+def _hf_output_was_truncated(
+    *,
+    sequence: Any,
+    architecture: str,
+    input_len: int,
+    eos_token_id: int | None,
+    max_new_tokens: int | None,
+) -> bool:
+    if max_new_tokens is None:
+        return False
+    if architecture == "causal":
+        new_token_count = len(sequence) - input_len
+    else:
+        new_token_count = len(sequence)
+    if new_token_count < max_new_tokens:
+        return False
+    if len(sequence) == 0:
+        return True
+    if eos_token_id is None:
+        return True
+    return int(sequence[-1]) != int(eos_token_id)
+
+
+def _resolve_hf_max_new_tokens(
+    *,
+    model: Any,
+    architecture: str,
+    input_len: int,
+) -> int | None:
+    model_config = getattr(model, "config", None)
+    model_max_positions = getattr(model_config, "max_position_embeddings", None)
+    if isinstance(model_max_positions, int) and model_max_positions > 0:
+        if architecture == "causal":
+            if input_len >= model_max_positions:
+                raise RuntimeError(
+                    f"Prompt length ({input_len} tokens) reached model context limit "
+                    f"({model_max_positions}). Trim few-shot examples."
+                )
+            return model_max_positions - input_len
+        return model_max_positions
+
+    return None
 
 
 

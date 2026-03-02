@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from functools import lru_cache
+from typing import Any
 
 from transformers import AutoTokenizer
 
@@ -84,13 +85,21 @@ def build_prompt(
 ) -> str:
     examples = FEW_SHOT_EXAMPLES[benchmark]
 
+    if not cot:
+        return f"Q: {question}\nA:"
+
     if cot and model_name == "google/ul2":
         return _build_ul2_adaptive_prompt(question, examples)
 
-    if cot:
-        return f"{examples}\n\nQ: {question}\nA:"
-    else:
-        return f"Q: {question}\nA:"
+    if cot and _should_use_generic_adaptive_prompt(model_name):
+        try:
+            tokenizer = _get_model_tokenizer(model_name)
+            return _build_tokenizer_adaptive_prompt(question, examples, tokenizer)
+        except Exception:
+            # If tokenizer lookup fails, fall back to the full few-shot prompt.
+            pass
+
+    return f"{examples}\n\nQ: {question}\nA:"
 
 
 def _split_example_blocks(examples: str) -> list[str]:
@@ -114,16 +123,32 @@ def _get_ul2_tokenizer():
     return AutoTokenizer.from_pretrained("google/ul2", use_fast=True)
 
 
-def _get_ul2_input_limit(tokenizer) -> int:
+@lru_cache(maxsize=8)
+def _get_model_tokenizer(model_name: str):
+    return AutoTokenizer.from_pretrained(model_name, use_fast=True)
+
+
+def _get_ul2_input_limit(tokenizer: Any) -> int:
+    return _get_tokenizer_input_limit(tokenizer)
+
+
+def _get_tokenizer_input_limit(tokenizer: Any) -> int:
     model_max = getattr(tokenizer, "model_max_length", None)
     if isinstance(model_max, int) and 0 < model_max < 100_000:
         return model_max
     return 512
 
 
-def _build_ul2_adaptive_prompt(question: str, examples: str) -> str:
-    tokenizer = _get_ul2_tokenizer()
-    max_tokens = _get_ul2_input_limit(tokenizer)
+def _should_use_generic_adaptive_prompt(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    if model_name.startswith("gpt-"):
+        return False
+    return "/" in model_name
+
+
+def _build_tokenizer_adaptive_prompt(question: str, examples: str, tokenizer: Any) -> str:
+    max_tokens = _get_tokenizer_input_limit(tokenizer)
     blocks = _split_example_blocks(examples)
 
     question_only = f"Q: {question}\nA:"
@@ -145,3 +170,8 @@ def _build_ul2_adaptive_prompt(question: str, examples: str) -> str:
             return prompt
 
     return question_only
+
+
+def _build_ul2_adaptive_prompt(question: str, examples: str) -> str:
+    tokenizer = _get_ul2_tokenizer()
+    return _build_tokenizer_adaptive_prompt(question, examples, tokenizer)
