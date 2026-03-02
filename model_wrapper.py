@@ -12,7 +12,7 @@ FIXED_TOP_P = 1.0
 _RESPONSES_TEMPERATURE_MODELS = {"gpt-5.2"}
 _CONTINUATION_PROMPT = "Continue exactly where you stopped. Do not repeat prior text."
 _MAX_OPENAI_CONTINUATIONS = 8
-_MAX_HF_CONTINUATIONS = 8
+_MAX_HF_CONTINUATIONS = 1
 
 
 def _get_tokenizer_input_limit(tokenizer: Any) -> int:
@@ -348,7 +348,7 @@ def _continue_seq2seq_generation_if_needed(
     if len(sequence) < max_new_tokens:
         return sequence
 
-    for _ in range(_MAX_HF_CONTINUATIONS + 1):
+    for _ in range(_MAX_HF_CONTINUATIONS):
         if hasattr(sequence, "unsqueeze"):
             decoder_prefix = sequence.unsqueeze(0)
         else:
@@ -377,7 +377,7 @@ def _continue_seq2seq_generation_if_needed(
             return sequence
 
     raise RuntimeError(
-        f"Seq2seq output still reached generation limit after {_MAX_HF_CONTINUATIONS} continuations."
+        f"Seq2seq output still reached generation limit after {_MAX_HF_CONTINUATIONS} continuation."
     )
 
 
