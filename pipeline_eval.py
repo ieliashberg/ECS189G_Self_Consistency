@@ -11,6 +11,7 @@ from tqdm import tqdm
 from model_wrapper import run_model
 from pipeline_types import EvalStats
 from prompts import BenchmarkType, build_prompt
+from response_cache_util import get_cached, put_cache
 
 
 def _normalize_numeric(text: str) -> Optional[str]:
@@ -105,17 +106,28 @@ def query_model(
     temperature: float,
     num_samples: int,
     max_retries: int = 3,
+    use_cache: bool = True,
 ) -> List[str]:
+    # Check disk cache first (saves 100% on re-runs)
+    if use_cache:
+        cached = get_cached(model, prompt, temperature, num_samples)
+        if cached is not None:
+            return cached
+
     last_error: Optional[Exception] = None
     for attempt in range(max_retries):
         try:
-            return run_model(
+            responses = run_model(
                 model_name=model,
                 prompt=prompt,
                 temperature=temperature,
                 top_p=1.0,
                 num_samples=num_samples,
             )
+            # Cache the result to disk
+            if use_cache:
+                put_cache(model, prompt, temperature, num_samples, responses)
+            return responses
         except Exception as error:
             last_error = error
             time.sleep(2 ** attempt)

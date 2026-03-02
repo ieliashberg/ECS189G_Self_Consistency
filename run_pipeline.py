@@ -40,7 +40,7 @@ def build_pipeline_config(
 
 def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
     # Only OpenAI models require OPENAI_API_KEY.
-    if config.model in {"gpt-3.5-turbo", "gpt-5.2"}:
+    if config.model in {"gpt-3.5-turbo", "gpt-5-mini", "gpt-5.2"}:
         load_openai_key_from_envfile()
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY is not set. Add it to the environment or .env file.")

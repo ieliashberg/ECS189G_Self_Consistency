@@ -181,6 +181,8 @@ class ModelClient:
 def _infer_model_route(model_name: str) -> Tuple[str, str, str]:
     if model_name == "gpt-3.5-turbo":
         return "openai", "chat", ""
+    if model_name == "gpt-5-mini":
+        return "openai", "chat", ""
     if model_name == "gpt-5.2":
         return "openai", "responses", ""
 
