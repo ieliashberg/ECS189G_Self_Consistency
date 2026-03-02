@@ -231,6 +231,7 @@ class ModelClient:
             model=model,
             architecture=architecture,
             input_len=input_len,
+            tokenizer=tokenizer,
         )
         if inferred_max_new_tokens is not None:
             generate_kwargs["max_new_tokens"] = inferred_max_new_tokens
@@ -296,15 +297,6 @@ def _responses_supports_temperature(model_name: str) -> bool:
     return model_name in _RESPONSES_TEMPERATURE_MODELS
 
 
-def _response_incomplete_reason(response: Any) -> str | None:
-    details = getattr(response, "incomplete_details", None)
-    if isinstance(details, dict):
-        reason = details.get("reason")
-        return str(reason) if reason else None
-    reason = getattr(details, "reason", None)
-    return str(reason) if reason else None
-
-
 def _responses_was_truncated(response: Any) -> bool:
     status = getattr(response, "status", None)
     if status == "incomplete":
@@ -345,18 +337,34 @@ def _resolve_hf_max_new_tokens(
     model: Any,
     architecture: str,
     input_len: int,
+    tokenizer: Any,
 ) -> int | None:
     model_config = getattr(model, "config", None)
-    model_max_positions = getattr(model_config, "max_position_embeddings", None)
-    if isinstance(model_max_positions, int) and model_max_positions > 0:
+    context_candidates = [
+        getattr(model_config, "max_position_embeddings", None),
+        getattr(model_config, "n_positions", None),
+        getattr(model_config, "max_seq_len", None),
+        getattr(model_config, "seq_length", None),
+    ]
+    model_context_limit = next(
+        (int(value) for value in context_candidates if isinstance(value, int) and value > 0),
+        None,
+    )
+
+    if model_context_limit is None:
+        tokenizer_limit = _get_tokenizer_input_limit(tokenizer)
+        if tokenizer_limit > 0:
+            model_context_limit = tokenizer_limit
+
+    if model_context_limit is not None:
         if architecture == "causal":
-            if input_len >= model_max_positions:
+            if input_len >= model_context_limit:
                 raise RuntimeError(
                     f"Prompt length ({input_len} tokens) reached model context limit "
-                    f"({model_max_positions}). Trim few-shot examples."
+                    f"({model_context_limit}). Trim few-shot examples."
                 )
-            return model_max_positions - input_len
-        return model_max_positions
+            return model_context_limit - input_len
+        return model_context_limit
 
     return None
 

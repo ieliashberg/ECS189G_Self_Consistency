@@ -10,7 +10,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run all four benchmarks on gpt-5-mini with cache-aware "
-            "self-consistency at k=40 only."
+            "self-consistency at k=40 and greedy baseline at k=1."
         )
     )
     parser.add_argument(
@@ -29,12 +29,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap per benchmark dataset (default: full dataset).",
     )
-    parser.add_argument(
-        "--self-consistency-temperature",
-        type=float,
-        default=0.7,
-        help="Temperature used for self-consistency sampling.",
-    )
     return parser.parse_args()
 
 
@@ -44,10 +38,10 @@ def main() -> None:
     config = build_pipeline_config(
         model="gpt-5-mini",
         datasets=["svamp", "aqua", "gsm8k", "strategy_qa"],
-        methods=["self_consistency, greedy"],
-        k_values=[40],
+        methods=["greedy", "self_consistency"],
+        k_values=[1, 40],
         max_samples=args.max_samples,
-        self_consistency_temperature=args.self_consistency_temperature,
+        self_consistency_temperature=0.7,
         cache_path=args.cache_path,
         output_csv=args.output_csv,
     )
