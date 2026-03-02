@@ -9,6 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 # so client persists
 _DEFAULT_MODEL_CLIENT: ModelClient | None = None
 FIXED_TOP_P = 1.0
+_RESPONSES_TEMPERATURE_MODELS = {"gpt-5.2"}
 
 
 def _get_tokenizer_input_limit(tokenizer: Any) -> int:
@@ -81,9 +82,10 @@ class ModelClient:
                 kwargs = {
                     "model": model_name,
                     "input": prompt,
-                    "temperature": temperature,
-                    "top_p": FIXED_TOP_P,
                 }
+                if _responses_supports_temperature(model_name):
+                    kwargs["temperature"] = temperature
+                    kwargs["top_p"] = FIXED_TOP_P
                 response = self._openai_client.responses.create(**kwargs)
                 text = getattr(response, "output_text", None)
                 outputs.append(text.strip() if text else _extract_text_from_response(response).strip())
@@ -174,11 +176,17 @@ class ModelClient:
 def _infer_model_route(model_name: str) -> Tuple[str, str, str]:
     if model_name == "gpt-3.5-turbo":
         return "openai", "chat", ""
+    if model_name == "gpt-5-mini":
+        return "openai", "responses", ""
     if model_name == "gpt-5.2":
         return "openai", "responses", ""
     if model_name == "google/ul2":
         return "huggingface", "", "seq2seq"
     return "huggingface", "", "causal"
+
+
+def _responses_supports_temperature(model_name: str) -> bool:
+    return model_name in _RESPONSES_TEMPERATURE_MODELS
 
 
 

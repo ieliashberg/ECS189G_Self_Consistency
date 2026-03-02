@@ -19,6 +19,8 @@ from pipeline_types import EvalStats, PipelineConfig
 def _infer_runtime_route(model_name: str) -> tuple[str, str]:
     if model_name == "gpt-3.5-turbo":
         return "openai", "chat"
+    if model_name == "gpt-5-mini":
+        return "openai", "responses"
     if model_name == "gpt-5.2":
         return "openai", "responses"
     if model_name == "google/ul2":
@@ -91,7 +93,7 @@ def build_pipeline_config(
 
 
 def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
-    if config.model in {"gpt-3.5-turbo", "gpt-5.2"}:
+    if config.model in {"gpt-3.5-turbo", "gpt-5-mini", "gpt-5.2"}:
         load_openai_key_from_envfile()
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY is not set. Add it to the environment or .env file.")
@@ -111,9 +113,6 @@ def run_benchmark_pipeline(config: PipelineConfig) -> list[EvalStats]:
     for benchmark, dataset in loaded_datasets.items():
         for method in config.methods:
             if method == "greedy":
-                if 1 not in config.k_values:
-                    print(f"Skipping greedy for {benchmark.value}: k=1 not in k_values={config.k_values}")
-                    continue
                 rows.extend(
                     evaluate_with_cache(
                         model=config.model,
