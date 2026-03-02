@@ -12,6 +12,7 @@ FIXED_TOP_P = 1.0
 _RESPONSES_TEMPERATURE_MODELS = {"gpt-5.2"}
 _CONTINUATION_PROMPT = "Continue exactly where you stopped. Do not repeat prior text."
 _MAX_OPENAI_CONTINUATIONS = 8
+_MAX_HF_CONTINUATIONS = 8
 
 
 def _get_tokenizer_input_limit(tokenizer: Any) -> int:
@@ -260,15 +261,22 @@ class ModelClient:
 
             for seq in generated:
                 raw_seq = seq
-                if _hf_output_was_truncated(
+                if architecture == "seq2seq":
+                    raw_seq = _continue_seq2seq_generation_if_needed(
+                        model=model,
+                        model_inputs=model_inputs,
+                        initial_sequence=raw_seq,
+                        generate_kwargs=generate_kwargs,
+                        max_new_tokens=inferred_max_new_tokens,
+                    )
+                elif _hf_output_was_truncated(
                     sequence=raw_seq,
                     architecture=architecture,
                     input_len=input_len,
-                    eos_token_id=tokenizer.eos_token_id,
                     max_new_tokens=inferred_max_new_tokens,
                 ):
                     raise RuntimeError(
-                        f"{model_name} output reached its configured generation limit before EOS. "
+                        f"{model_name} output reached its configured generation limit. "
                         "Trim few-shot examples if needed."
                     )
                 if architecture == "causal":
@@ -314,7 +322,6 @@ def _hf_output_was_truncated(
     sequence: Any,
     architecture: str,
     input_len: int,
-    eos_token_id: int | None,
     max_new_tokens: int | None,
 ) -> bool:
     if max_new_tokens is None:
@@ -323,13 +330,55 @@ def _hf_output_was_truncated(
         new_token_count = len(sequence) - input_len
     else:
         new_token_count = len(sequence)
-    if new_token_count < max_new_tokens:
-        return False
-    if len(sequence) == 0:
-        return True
-    if eos_token_id is None:
-        return True
-    return int(sequence[-1]) != int(eos_token_id)
+    return new_token_count >= max_new_tokens
+
+
+def _continue_seq2seq_generation_if_needed(
+    *,
+    model: Any,
+    model_inputs: Dict[str, Any],
+    initial_sequence: Any,
+    generate_kwargs: Dict[str, Any],
+    max_new_tokens: int | None,
+) -> Any:
+    sequence = initial_sequence
+    if max_new_tokens is None:
+        return sequence
+
+    if len(sequence) < max_new_tokens:
+        return sequence
+
+    for _ in range(_MAX_HF_CONTINUATIONS + 1):
+        if hasattr(sequence, "unsqueeze"):
+            decoder_prefix = sequence.unsqueeze(0)
+        else:
+            if hasattr(torch, "tensor"):
+                input_ids = model_inputs.get("input_ids")
+                if input_ids is None or not hasattr(input_ids, "device"):
+                    decoder_prefix = torch.tensor(sequence).unsqueeze(0)
+                else:
+                    decoder_prefix = torch.tensor(sequence, device=input_ids.device).unsqueeze(0)
+            else:
+                decoder_prefix = [list(sequence)]
+
+        continuation_kwargs = dict(generate_kwargs)
+        continuation_kwargs["num_return_sequences"] = 1
+        continuation_kwargs["decoder_input_ids"] = decoder_prefix
+        with torch.no_grad():
+            generated = model.generate(**model_inputs, **continuation_kwargs)
+        if len(generated) == 0:
+            raise RuntimeError("Seq2seq continuation returned no sequences.")
+        next_sequence = generated[0]
+        if len(next_sequence) <= len(sequence):
+            raise RuntimeError("Seq2seq continuation did not advance the decoded sequence.")
+        newly_generated = len(next_sequence) - len(sequence)
+        sequence = next_sequence
+        if newly_generated < max_new_tokens:
+            return sequence
+
+    raise RuntimeError(
+        f"Seq2seq output still reached generation limit after {_MAX_HF_CONTINUATIONS} continuations."
+    )
 
 
 def _resolve_hf_max_new_tokens(
